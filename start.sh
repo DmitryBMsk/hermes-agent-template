@@ -41,4 +41,23 @@ if [ ! -f /data/.hermes/sessions/sessions.json ] && \
      /data/.hermes/sessions/sessions.json
 fi
 
+# Safety net for user hooks: a syntactically broken handler.py crashes
+# gateway:startup and (depending on Hermes loader version) can block boot.
+# Quarantine any handler.py that fails py_compile before Hermes loads it.
+QUARANTINE="/data/.hermes/hooks/_failed_validation_$(date +%Y%m%d%H%M%S)"
+for hook_dir in /data/.hermes/hooks/*/; do
+  [ -d "$hook_dir" ] || continue
+  case "$(basename "$hook_dir")" in
+    _disabled_*|_failed_validation_*) continue ;;
+  esac
+  handler="$hook_dir/handler.py"
+  if [ -f "$handler" ]; then
+    if ! python3 -c "import py_compile,sys; py_compile.compile('$handler', doraise=True)" >/dev/null 2>&1; then
+      mkdir -p "$QUARANTINE"
+      mv "$hook_dir" "$QUARANTINE/" 2>/dev/null || true
+      echo "[start.sh] quarantined broken hook: $(basename "$hook_dir") -> $QUARANTINE" >&2
+    fi
+  fi
+done
+
 exec python /app/server.py
