@@ -1,0 +1,105 @@
+name: Daily fallback model refresh
+
+on:
+  schedule:
+    # 04:00 UTC daily — middle of UK night, shir-man's ranking refresh
+    # happens at ~03:17 UTC so we get a freshly-evaluated leader.
+    - cron: '0 4 * * *'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fallback-model-refresh
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - name: Fetch top free model from shir-man.com
+        id: fetch
+        run: |
+          set -euo pipefail
+          RESPONSE=""
+          for attempt in 1 2 3; do
+            if RESPONSE=$(curl -sSf --max-time 15 https://shir-man.com/api/free-llm/top-models); then
+              break
+            fi
+            echo "::warning::shir-man fetch attempt $attempt failed; retrying in 10s"
+            RESPONSE=""
+            sleep 10
+          done
+          if [ -z "$RESPONSE" ]; then
+            echo "::warning::shir-man unreachable after 3 attempts; falling through to last-known-good on Hermes volume"
+            {
+              echo "fetch_ok=false"
+              echo "model_id="
+              echo "model_name="
+            } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          MODEL_ID=$(echo "$RESPONSE" | jq -r '.models[0].id // empty')
+          MODEL_NAME=$(echo "$RESPONSE" | jq -r '.models[0].name // empty')
+          if [ -z "$MODEL_ID" ] || ! echo "$MODEL_ID" | grep -qE '^[a-zA-Z0-9._-]+/[a-zA-Z0-9._:-]+$'; then
+            echo "::warning::invalid model id '$MODEL_ID' from shir-man; falling through to last-known-good"
+            {
+              echo "fetch_ok=false"
+              echo "model_id="
+              echo "model_name="
+            } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          {
+            echo "fetch_ok=true"
+            echo "model_id=$MODEL_ID"
+            echo "model_name=$MODEL_NAME"
+          } >> "$GITHUB_OUTPUT"
+          echo "::notice::picked $MODEL_ID ($MODEL_NAME)"
+
+      - name: Install Railway CLI
+        run: |
+          set -euo pipefail
+          curl -fsSL https://railway.com/install.sh | sh
+          echo "$HOME/.railway/bin" >> "$GITHUB_PATH"
+
+      - name: Apply fallback to Hermes config
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+          MODEL_ID: ${{ steps.fetch.outputs.model_id }}
+          MODEL_NAME: ${{ steps.fetch.outputs.model_name }}
+          FETCH_OK: ${{ steps.fetch.outputs.fetch_ok }}
+        run: |
+          set -euo pipefail
+          railway ssh --service "Hermes Agent" --environment production -- \
+            python3 /data/.hermes/scripts/refresh-fallback.py "$MODEL_ID" "$MODEL_NAME" "$FETCH_OK"
+
+      - name: Restart Hermes gateway
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+        run: |
+          set -euo pipefail
+          railway ssh --service "Hermes Agent" --environment production -- hermes gateway restart || true
+          echo "::notice::gateway restart issued; reconnects within ~10-15s"
+
+      - name: Verify gateway came back
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+        run: |
+          set -euo pipefail
+          # gateway_state.json on the volume is authoritative; admin /health
+          # currently caches a stale state file (separate Hermes bug).
+          for attempt in 1 2 3 4 5 6 7 8 9 10; do
+            STATE=$(railway ssh --service "Hermes Agent" --environment production -- \
+              cat /data/.hermes/gateway_state.json 2>/dev/null | jq -r '.gateway_state // "unknown"' || true)
+            if [ "$STATE" = "running" ]; then
+              echo "::notice::gateway running after ${attempt} poll(s)"
+              exit 0
+            fi
+            echo "attempt $attempt: gateway_state=$STATE"
+            sleep 10
+          done
+          echo "::error::gateway did not return to running within 100s"
+          exit 1
