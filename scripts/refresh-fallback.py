@@ -4,9 +4,12 @@ This script lives on the Hermes volume at /data/.hermes/scripts/refresh-fallback
 and is invoked by .github/workflows/daily-fallback-model.yml via `railway ssh`.
 
 Usage:
-    refresh-fallback.py <MODEL_ID> <MODEL_NAME> <FETCH_OK:true|false>
+    echo '{"id": "...", "name": "...", "ok": true|false}' | refresh-fallback.py
 
-If FETCH_OK=false (shir-man unreachable), we keep the last-known-good entry
+Input is JSON on stdin (railway ssh flattens positional args without quoting,
+so model names with spaces or shell-special characters need this).
+
+If ok=false (shir-man unreachable), we keep the last-known-good entry
 from /data/.hermes/fallback-model-last-known.json instead of clearing the chain.
 If that file is also missing, the script aborts non-zero so the cron run
 fails loudly rather than wiping a working config.
@@ -27,9 +30,14 @@ MODEL_RE = re.compile(r"^[a-zA-Z0-9._-]+/[a-zA-Z0-9._:-]+$")
 
 
 def main() -> int:
-    mid = (sys.argv[1] if len(sys.argv) > 1 else "").strip()
-    mnm = (sys.argv[2] if len(sys.argv) > 2 else "").strip()
-    ok  = (sys.argv[3] if len(sys.argv) > 3 else "false").lower() == "true"
+    try:
+        payload = json.load(sys.stdin)
+    except json.JSONDecodeError as e:
+        print(f"ERROR: stdin is not valid JSON: {e}", file=sys.stderr)
+        return 4
+    mid = str(payload.get("id", "")).strip()
+    mnm = str(payload.get("name", "")).strip()
+    ok  = bool(payload.get("ok", False))
 
     if not ok:
         try:

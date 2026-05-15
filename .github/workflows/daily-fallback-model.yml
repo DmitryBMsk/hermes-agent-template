@@ -73,8 +73,14 @@ jobs:
           FETCH_OK: ${{ steps.fetch.outputs.fetch_ok }}
         run: |
           set -euo pipefail
-          railway ssh --service "Hermes Agent" --environment production -- \
-            python3 /data/.hermes/scripts/refresh-fallback.py "$MODEL_ID" "$MODEL_NAME" "$FETCH_OK"
+          # JSON on stdin sidesteps railway ssh's lack of arg quoting (model
+          # names contain spaces and shell-special chars like parentheses).
+          PAYLOAD=$(python3 -c '
+          import json, sys
+          print(json.dumps({"id": sys.argv[1], "name": sys.argv[2], "ok": sys.argv[3] == "true"}))
+          ' "$MODEL_ID" "$MODEL_NAME" "$FETCH_OK")
+          echo "$PAYLOAD" | railway ssh --service "Hermes Agent" --environment production -- \
+            python3 /data/.hermes/scripts/refresh-fallback.py
 
       - name: Restart Hermes gateway
         env:
