@@ -1,0 +1,4 @@
+name: codex-compat-patch
+description: "Strip extra_headers + drop tools with malformed array schemas from Codex Responses payloads (2026-05-15 backend tightening)."
+events:
+  - gateway:startup
