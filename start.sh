@@ -26,15 +26,10 @@ fi
 rm -f /data/.hermes/gateway.pid
 
 # One-shot recovery from a corrupted /data/.hermes layout left by ad-hoc
-# diagnostics on 2026-05-13: an experimental hooks/telegram-noreply-filter
-# directory caused gateway:startup to crash, and sessions index was archived
-# without restoring sessions.json — both block boot. Idempotent: no-op once
-# volume is healthy. Safe to leave in start.sh permanently.
-if [ -d /data/.hermes/hooks/telegram-noreply-filter ]; then
-  mkdir -p /data/.hermes/hooks/_disabled_20260513
-  mv /data/.hermes/hooks/telegram-noreply-filter \
-     /data/.hermes/hooks/_disabled_20260513/ 2>/dev/null || true
-fi
+# diagnostics on 2026-05-13: the sessions index was archived without restoring
+# sessions.json. Hook quarantine below now validates hook syntax generically, so
+# do not disable named hooks here; telegram-noreply-filter is an active
+# production hook.
 if [ ! -f /data/.hermes/sessions/sessions.json ] && \
    [ -f /data/.hermes/sessions/_archive_20260513/sessions.json.bak ]; then
   cp /data/.hermes/sessions/_archive_20260513/sessions.json.bak \
