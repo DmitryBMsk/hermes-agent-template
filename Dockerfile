@@ -8,7 +8,7 @@ FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim
 # newest tag (format `vYYYY.M.D`, e.g. `v2026.4.23`) and update the default
 # below. Use `main` only if you accept that every rebuild can pull arbitrary
 # new upstream commits.
-ARG HERMES_REF=v2026.5.16
+ARG HERMES_REF=v2026.5.28
 
 # tini = tiny init that we run as PID 1. Without it, hermes's grandchild
 # processes (MCP stdio servers, git, bun, browser daemons spawned by tools)
@@ -39,7 +39,7 @@ RUN apt-get update && \
 # PyPI restores the package or upstream removes the pin.
 RUN git clone --depth 1 --branch ${HERMES_REF} https://github.com/NousResearch/hermes-agent.git /opt/hermes-agent && \
     cd /opt/hermes-agent && \
-    uv pip install --system --no-cache -e ".[modal,daytona,vercel,messaging,matrix,cron,cli,dev,tts-premium,slack,pty,honcho,mcp,homeassistant,sms,acp,voice,dingtalk,feishu,google,bedrock,web]" && \
+    uv pip install --system --no-cache -e ".[modal,daytona,messaging,matrix,cron,cli,dev,tts-premium,slack,pty,honcho,mcp,homeassistant,sms,acp,voice,dingtalk,feishu,google,bedrock,web]" && \
     cd /opt/hermes-agent/web && \
     npm install --silent && \
     npm run build && \
