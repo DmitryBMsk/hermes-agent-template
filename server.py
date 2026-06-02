@@ -21,6 +21,13 @@ Once configured, / proxies to the Hermes dashboard. A small "← Setup" widget i
 injected into every proxied HTML response so users can always return to the wizard.
 """
 
+# PEP 563 lazy annotations: keeps function/parameter type hints as strings so
+# they're never evaluated at import. Avoids the startup DeprecationWarning from
+# annotating against websockets.WebSocketClientProtocol (renamed in websockets
+# >= 14), and is forward-compatible regardless of the installed websockets
+# version. Safe here — nothing in this module introspects annotations at runtime.
+from __future__ import annotations
+
 import asyncio
 import json
 import os
@@ -82,20 +89,40 @@ ENV_VARS = [
     ("LLM_MODEL",               "Model",                    "model",     False),
     ("OPENROUTER_API_KEY",       "OpenRouter",               "provider",  True),
     ("DEEPSEEK_API_KEY",         "DeepSeek",                 "provider",  True),
-    ("DASHSCOPE_API_KEY",        "DashScope",                "provider",  True),
+    ("DASHSCOPE_API_KEY",        "Qwen Cloud (DashScope)",   "provider",  True),
     ("GLM_API_KEY",              "GLM / Z.AI",               "provider",  True),
     ("KIMI_API_KEY",             "Kimi",                     "provider",  True),
     ("MINIMAX_API_KEY",          "MiniMax",                  "provider",  True),
     ("HF_TOKEN",                 "Hugging Face",             "provider",  True),
-    # Added in v2026.4.23 (hermes v0.11.0). All plain API-key auth — hermes
+    # Added in v2026.4.23+ (hermes v0.11.0+). All plain API-key auth — hermes
     # auto-routes by env-var presence, no extra config needed on our side.
-    # OAuth-based providers (Gemini CLI, Qwen OAuth, Claude Code, Copilot)
-    # are reachable via the dashboard's Keys tab and not exposed here.
+    # OAuth-based providers (xAI Grok SuperGrok, Gemini CLI, Qwen OAuth, Claude Code)
+    # are set up via the dashboard's Keys tab or HERMES_AUTH_JSON_BOOTSTRAP.
     ("NVIDIA_API_KEY",           "NVIDIA NIM",               "provider",  True),
-    ("ARCEE_API_KEY",            "Arcee AI",                 "provider",  True),
+    ("ARCEEAI_API_KEY",          "Arcee AI",                 "provider",  True),
     ("STEPFUN_API_KEY",          "Step Plan",                "provider",  True),
-    ("AI_GATEWAY_API_KEY",       "Vercel AI Gateway",        "provider",  True),
     ("GEMINI_API_KEY",           "Google AI Studio",         "provider",  True),
+    ("NOVITA_API_KEY",           "NovitaAI",                 "provider",  True),
+    ("FIREWORKS_API_KEY",        "Fireworks AI",             "provider",  True),
+    ("ANTHROPIC_API_KEY",        "Anthropic (Claude)",       "provider",  True),
+    ("XAI_API_KEY",              "xAI",                      "provider",  True),
+    ("AWS_ACCESS_KEY_ID",        "AWS Access Key ID",        "provider",  True),
+    ("AWS_SECRET_ACCESS_KEY",    "AWS Secret Access Key",    "bedrock",   True),
+    ("AWS_DEFAULT_REGION",       "AWS Region",               "bedrock",   False),
+    ("COPILOT_GITHUB_TOKEN",     "GitHub Copilot",           "provider",  True),
+    ("GMI_API_KEY",              "GMI Cloud",                "provider",  True),
+    ("OPENCODE_ZEN_API_KEY",     "OpenCode Zen",             "provider",  True),
+    ("OPENCODE_GO_API_KEY",      "OpenCode Go",              "provider",  True),
+    ("KILOCODE_API_KEY",         "Kilo Code",                "provider",  True),
+    ("OLLAMA_API_KEY",           "Ollama Cloud",             "provider",  True),
+    ("AZURE_FOUNDRY_API_KEY",    "Azure Foundry key",        "provider",  True),
+    ("AZURE_FOUNDRY_BASE_URL",   "Azure Foundry URL",        "azure",     False),
+    # Custom OpenAI-compatible endpoint — one slot; more via Hermes dashboard.
+    # Only the API key is in category "provider" so PROVIDER_KEYS / is_config_complete
+    # only trigger when an actual key is present, not just a base URL.
+    ("CUSTOM_PROVIDER_API_KEY",  "Custom Provider key",      "provider",  True),
+    ("CUSTOM_PROVIDER_BASE_URL", "Custom Provider base URL", "custom",    False),
+    ("CUSTOM_PROVIDER_NAME",     "Custom Provider name",     "custom",    False),
     ("PARALLEL_API_KEY",         "Parallel (search)",        "tool",      True),
     ("FIRECRAWL_API_KEY",        "Firecrawl (scrape)",       "tool",      True),
     ("TAVILY_API_KEY",           "Tavily (search)",          "tool",      True),
@@ -193,7 +220,12 @@ def write_config_yaml(data: dict[str, str]) -> None:
     # Deployment-managed (always authoritative — these reflect the runtime env).
     merged_model = dict(merged.get("model") if isinstance(merged.get("model"), dict) else {})
     merged_model["default"] = model
-    merged_model["provider"] = "auto"
+    # Only force provider="auto" when a known API key is configured. If no
+    # API key is set, the user likely configured an OAuth provider (xai-oauth,
+    # qwen-oauth, etc.) via the dashboard's model picker — preserve that value
+    # so a container restart doesn't revert it to "auto" and break their session.
+    if any(data.get(k) for k in PROVIDER_KEYS):
+        merged_model["provider"] = "auto"
     merged["model"] = merged_model
 
     merged_terminal = dict(merged.get("terminal") if isinstance(merged.get("terminal"), dict) else {})
@@ -208,20 +240,38 @@ def write_config_yaml(data: dict[str, str]) -> None:
 
     merged["data_dir"] = HERMES_HOME
 
+    # Custom OpenAI-compatible endpoint — write custom_providers block when configured,
+    # remove it when not (safe on Railway where users don't hand-edit config.yaml).
+    custom_base_url = data.get("CUSTOM_PROVIDER_BASE_URL", "").strip()
+    if custom_base_url:
+        raw_name = data.get("CUSTOM_PROVIDER_NAME", "").strip() or custom_base_url
+        # Sanitise to a valid hermes provider name (lowercase alphanumeric + hyphens).
+        sanitized_name = re.sub(r"[^a-z0-9-]", "-", raw_name.lower()).strip("-") or "custom"
+        merged["custom_providers"] = [{
+            "name": sanitized_name,
+            "base_url": custom_base_url,
+            "key_env": "CUSTOM_PROVIDER_API_KEY",
+        }]
+    else:
+        merged.pop("custom_providers", None)
+
     with config_path.open("w") as f:
         yaml.safe_dump(merged, f, sort_keys=False, default_flow_style=False)
 
 
 def write_env(path: Path, data: dict[str, str]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    cat_order = ["model", "provider", "tool",
+    cat_order = ["model", "provider", "bedrock", "azure", "custom", "tool",
                  "telegram", "discord", "slack", "whatsapp",
-                 "email", "mattermost", "matrix", "gateway"]
+                 "email", "mattermost", "matrix", "gateway", "admin"]
     cat_labels = {
-        "model": "Model", "provider": "Providers", "tool": "Tools",
+        "model": "Model", "provider": "Providers",
+        "bedrock": "AWS Bedrock", "azure": "Azure Foundry",
+        "custom": "Custom Endpoint", "tool": "Tools",
         "telegram": "Telegram", "discord": "Discord", "slack": "Slack",
         "whatsapp": "WhatsApp", "email": "Email",
         "mattermost": "Mattermost", "matrix": "Matrix", "gateway": "Gateway",
+        "admin": "Admin",
     }
     key_cat = {k: c for k, _, c, _ in ENV_VARS}
     grouped: dict[str, list[str]] = {c: [] for c in cat_order}
@@ -248,6 +298,251 @@ def write_env(path: Path, data: dict[str, str]) -> None:
     path.write_text("\n".join(lines))
 
 
+# ── xAI Grok SuperGrok OAuth (Device Code — RFC 8628) ───────────────────────
+# xAI's OIDC discovery at https://auth.x.ai/.well-known/openid-configuration
+# declares device_authorization_endpoint, so Device Code flow works without
+# any redirect URL. The client_id matches hermes's own Grok CLI credential.
+_XAI_CLIENT_ID   = "b1a00492-073a-47ea-816f-4c329264a828"
+_XAI_SCOPE       = "openid profile email offline_access grok-cli:access api:access"
+_XAI_DEVICE_URL  = "https://auth.x.ai/oauth2/device/code"
+_XAI_TOKEN_URL   = "https://auth.x.ai/oauth2/token"
+_XAI_GRANT_TYPE  = "urn:ietf:params:oauth:grant-type:device_code"
+
+_xai_oauth_state: dict | None = None  # one auth at a time (single-user deployment)
+
+
+def _has_xai_oauth_tokens() -> bool:
+    """True when auth.json contains a valid xAI OAuth refresh token."""
+    auth_path = Path(HERMES_HOME) / "auth.json"
+    if not auth_path.exists():
+        return False
+    try:
+        data = json.loads(auth_path.read_text())
+        tokens = data.get("providers", {}).get("xai-oauth", {}).get("tokens", {})
+        return bool(isinstance(tokens, dict) and tokens.get("refresh_token"))
+    except Exception:
+        return False
+
+
+def _save_xai_auth_json(tokens: dict) -> None:
+    """Write xAI OAuth tokens to auth.json in hermes's expected format."""
+    auth_path = Path(HERMES_HOME) / "auth.json"
+    existing: dict = {}
+    if auth_path.exists():
+        try:
+            existing = json.loads(auth_path.read_text())
+        except Exception:
+            pass
+    if not isinstance(existing, dict):
+        existing = {}
+
+    providers = existing.setdefault("providers", {})
+    providers["xai-oauth"] = {
+        "tokens": tokens,
+        "auth_mode": "oauth_device",
+        "last_refresh": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "discovery": {
+            "authorization_endpoint": "https://auth.x.ai/oauth2/authorize",
+            "token_endpoint": _XAI_TOKEN_URL,
+        },
+        "redirect_uri": "",
+    }
+    existing["active_provider"] = "xai-oauth"
+    existing["version"] = 2
+    existing["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+    auth_path.write_text(json.dumps(existing, indent=2) + "\n")
+    try:
+        auth_path.chmod(0o600)
+    except Exception:
+        pass
+
+
+def _apply_xai_oauth_config(model: str) -> None:
+    """Write config.yaml with provider=xai-oauth and the chosen model."""
+    import yaml
+    config_path = Path(HERMES_HOME) / "config.yaml"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    existing: dict = {}
+    if config_path.exists():
+        try:
+            with config_path.open() as f:
+                loaded = yaml.safe_load(f)
+            if isinstance(loaded, dict):
+                existing = loaded
+        except Exception:
+            pass
+
+    merged = dict(existing)
+    merged_model = dict(merged.get("model") if isinstance(merged.get("model"), dict) else {})
+    if model:
+        merged_model["default"] = model
+    merged_model["provider"] = "xai-oauth"
+    merged["model"] = merged_model
+
+    merged_terminal = dict(merged.get("terminal") if isinstance(merged.get("terminal"), dict) else {})
+    merged_terminal.setdefault("backend", "local")
+    merged_terminal.setdefault("timeout", 60)
+    merged_terminal.setdefault("cwd", "/tmp")
+    merged["terminal"] = merged_terminal
+
+    merged_agent = dict(merged.get("agent") if isinstance(merged.get("agent"), dict) else {})
+    merged_agent.setdefault("max_iterations", 50)
+    merged["agent"] = merged_agent
+    merged["data_dir"] = HERMES_HOME
+
+    with config_path.open("w") as f:
+        yaml.safe_dump(merged, f, sort_keys=False, default_flow_style=False)
+
+    # Persist LLM_MODEL and track the per-provider model so the setup UI can
+    # display it alongside the xAI entry in the "Configured Providers" list.
+    if model:
+        existing_env = read_env(ENV_FILE)
+        existing_env["LLM_MODEL"] = model
+        existing_env["_MODEL_XAI_OAUTH"] = model
+        write_env(ENV_FILE, existing_env)
+
+
+async def _poll_xai_device_auth(state: dict) -> None:
+    """Background task: poll xAI token endpoint until authorized or expired."""
+    client = get_http_client()
+    while time.time() < state["expires_at"]:
+        await asyncio.sleep(state["interval"])
+        try:
+            resp = await client.post(
+                _XAI_TOKEN_URL,
+                data={
+                    "grant_type": _XAI_GRANT_TYPE,
+                    "device_code": state["device_code"],
+                    "client_id": _XAI_CLIENT_ID,
+                },
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+                timeout=httpx.Timeout(15.0),
+            )
+        except Exception as e:
+            print(f"[xai-oauth] poll error: {e!r}", flush=True)
+            continue
+
+        if resp.status_code == 200:
+            try:
+                tokens = resp.json()
+            except Exception:
+                state["status"] = "error"
+                state["error"] = "Invalid token response from xAI"
+                return
+            _save_xai_auth_json(tokens)
+            _apply_xai_oauth_config(state.get("model", ""))
+            state["status"] = "authorized"
+            print("[xai-oauth] authorized — restarting gateway", flush=True)
+            asyncio.create_task(gw.restart())
+            return
+
+        try:
+            err_data = resp.json()
+        except Exception:
+            err_data = {}
+        error = err_data.get("error", "")
+
+        if error == "authorization_pending":
+            continue
+        elif error == "slow_down":
+            state["interval"] = min(state["interval"] + 5, 30)
+        else:
+            state["status"] = "error"
+            state["error"] = err_data.get("error_description", error) or error or "Unknown error"
+            print(f"[xai-oauth] failed: {error}", flush=True)
+            return
+
+    state["status"] = "expired"
+    print("[xai-oauth] device code expired", flush=True)
+
+
+async def api_oauth_xai_delete(request: Request) -> Response:
+    global _xai_oauth_state
+    if err := guard(request):
+        return err
+    auth_path = Path(HERMES_HOME) / "auth.json"
+    if auth_path.exists():
+        try:
+            data = json.loads(auth_path.read_text(encoding="utf-8"))
+            data.get("providers", {}).pop("xai-oauth", None)
+            if data.get("active_provider") == "xai-oauth":
+                data.pop("active_provider", None)
+            auth_path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+        except Exception:
+            pass
+    env = read_env(ENV_FILE)
+    env.pop("_MODEL_XAI_OAUTH", None)
+    write_env(ENV_FILE, env)
+    _xai_oauth_state = None
+    return JSONResponse({"ok": True})
+
+
+async def api_oauth_xai_start(request: Request) -> Response:
+    global _xai_oauth_state
+    if err := guard(request):
+        return err
+
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    model = str(body.get("model", "")).strip()
+
+    client = get_http_client()
+    try:
+        resp = await client.post(
+            _XAI_DEVICE_URL,
+            data={"client_id": _XAI_CLIENT_ID, "scope": _XAI_SCOPE},
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            timeout=httpx.Timeout(15.0),
+        )
+    except Exception as e:
+        return JSONResponse({"error": f"Could not reach xAI: {e}"}, status_code=502)
+
+    if resp.status_code != 200:
+        return JSONResponse(
+            {"error": f"xAI returned {resp.status_code}: {resp.text[:200]}"},
+            status_code=502,
+        )
+
+    try:
+        data = resp.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid response from xAI"}, status_code=502)
+
+    _xai_oauth_state = {
+        "device_code": data["device_code"],
+        "user_code": data["user_code"],
+        "verification_uri": data.get("verification_uri_complete") or data["verification_uri"],
+        "expires_at": time.time() + data.get("expires_in", 900),
+        "interval": max(data.get("interval", 5), 5),
+        "status": "pending",
+        "model": model,
+    }
+    asyncio.create_task(_poll_xai_device_auth(_xai_oauth_state))
+
+    return JSONResponse({
+        "user_code": data["user_code"],
+        "verification_uri": _xai_oauth_state["verification_uri"],
+        "expires_in": data.get("expires_in", 900),
+    })
+
+
+async def api_oauth_xai_status(request: Request) -> Response:
+    if err := guard(request):
+        return err
+    if _xai_oauth_state is None:
+        # No active flow — check if a previous session left valid tokens.
+        if _has_xai_oauth_tokens():
+            return JSONResponse({"status": "authorized"})
+        return JSONResponse({"status": "none"})
+    return JSONResponse({
+        "status": _xai_oauth_state["status"],
+        "error": _xai_oauth_state.get("error", ""),
+    })
+
+
 def is_config_complete(data: dict[str, str] | None = None) -> bool:
     """Single source of truth for 'ready to run the gateway'.
 
@@ -256,7 +551,7 @@ def is_config_complete(data: dict[str, str] | None = None) -> bool:
     if data is None:
         data = read_env(ENV_FILE)
     has_model = bool(data.get("LLM_MODEL"))
-    has_provider = any(data.get(k) for k in PROVIDER_KEYS)
+    has_provider = any(data.get(k) for k in PROVIDER_KEYS) or _has_xai_oauth_tokens()
     return has_model and has_provider
 
 
@@ -555,6 +850,11 @@ class Dashboard:
                 "--host", HERMES_DASHBOARD_HOST,
                 "--port", str(HERMES_DASHBOARD_PORT),
                 "--no-open",
+                # --skip-build: the Dockerfile pre-builds the React dashboard
+                # into hermes_cli/web_dist/ at image time. This flag tells
+                # hermes to trust that dist and skip its npm build check,
+                # which would otherwise add ~30s to first startup (hermes >= v2026.5.16).
+                "--skip-build",
                 # --tui exposes /api/pty + /api/ws + /api/events so the
                 # dashboard's embedded Chat tab works end-to-end. Requires
                 # hermes >= v2026.4.23 — older releases exit immediately
@@ -705,6 +1005,17 @@ async def api_config_reset(request: Request):
 
 
 # ── Pairing ───────────────────────────────────────────────────────────────────
+# Pending-request file format (hermes >= v0.15 / v2026.5.29.x, gateway/pairing.py):
+# each `{platform}-pending.json` entry is keyed by a random opaque `entry_id`
+# (secrets.token_hex), and the user-facing pairing code is stored only as a
+# salted hash ({hash, salt, user_id, user_name, created_at}) — the plaintext
+# code is never on disk. Our admin-approval flow is code-agnostic: the dashboard
+# is already cookie-authed, so we approve by moving an entry from pending →
+# approved keyed off that `entry_id` (round-tripped from the pending list as
+# `code`), reading `user_id`/`user_name` straight from the entry. We must NOT
+# uppercase that key — entry_ids are lowercase hex, and uppercasing them was
+# what silently broke approve/deny on the v0.15 upgrade. Older plaintext-keyed
+# entries still work here because we treat the key as an opaque handle.
 def _pjson(path: Path) -> dict:
     try:
         return json.loads(path.read_text()) if path.exists() else {}
@@ -741,7 +1052,7 @@ async def api_pairing_approve(request: Request):
     if err := guard(request): return err
     try: body = await request.json()
     except Exception: return JSONResponse({"error": "Invalid JSON"}, status_code=400)
-    platform, code = body.get("platform",""), body.get("code","").upper().strip()
+    platform, code = body.get("platform",""), body.get("code","").strip()
     if not platform or not code:
         return JSONResponse({"error": "platform and code required"}, status_code=400)
     pending_path = PAIRING_DIR / f"{platform}-pending.json"
@@ -749,9 +1060,14 @@ async def api_pairing_approve(request: Request):
     if code not in pending:
         return JSONResponse({"error": "Code not found"}, status_code=404)
     entry = pending.pop(code)
+    user_id = (entry.get("user_id") or "").strip() if isinstance(entry, dict) else ""
+    if not user_id:
+        # Malformed/legacy entry without a user_id — leave it in pending (we
+        # haven't written the pop yet) rather than silently discarding it.
+        return JSONResponse({"error": "Pending entry has no user_id"}, status_code=422)
     _wjson(pending_path, pending)
     approved = _pjson(PAIRING_DIR / f"{platform}-approved.json")
-    approved[entry["user_id"]] = {"user_name": entry.get("user_name",""), "approved_at": time.time()}
+    approved[user_id] = {"user_name": entry.get("user_name",""), "approved_at": time.time()}
     _wjson(PAIRING_DIR / f"{platform}-approved.json", approved)
     return JSONResponse({"ok": True})
 
@@ -760,7 +1076,7 @@ async def api_pairing_deny(request: Request):
     if err := guard(request): return err
     try: body = await request.json()
     except Exception: return JSONResponse({"error": "Invalid JSON"}, status_code=400)
-    platform, code = body.get("platform",""), body.get("code","").upper().strip()
+    platform, code = body.get("platform",""), body.get("code","").strip()
     p = PAIRING_DIR / f"{platform}-pending.json"
     pending = _pjson(p)
     if code in pending:
@@ -957,15 +1273,22 @@ async def lifespan(app):
 
 
 # ── WebSocket reverse proxy ──────────────────────────────────────────────────
-# The hermes dashboard exposes 4 WebSocket endpoints when started with --tui.
-# Three are opened by the browser SPA and need to flow through our reverse
-# proxy; the fourth (/api/pub) is opened only by the PTY child against
-# loopback and is intentionally NOT proxied — exposing it would let an
-# authed user spam events into channels.
+# The hermes dashboard exposes several WebSocket endpoints when started with
+# --tui. The browser SPA opens these and they must flow through our reverse
+# proxy. /api/pub is opened only by the PTY child against loopback and is
+# intentionally NOT proxied — exposing it would let an authed user spam events
+# into channels. It lives at /api/pub (not under /api/plugins/), so the plugin
+# prefix route below does not match it.
 #
-#   /api/pty     binary stream — embedded TUI keystrokes/output
-#   /api/ws      JSON-RPC      — gateway sidecar driving Chat metadata
-#   /api/events  text frames   — dashboard subscriber for /api/pub fan-out
+#   /api/pty                  binary stream — embedded TUI keystrokes/output
+#   /api/ws                   JSON-RPC      — gateway sidecar driving Chat metadata
+#   /api/events               text frames   — dashboard subscriber for /api/pub fan-out
+#   /api/plugins/<name>/...   plugin-contributed sockets. Mounted by hermes
+#                             under /api/plugins/<name>/ (web_server.
+#                             _mount_plugin_api_routes), e.g. kanban's
+#                             /api/plugins/kanban/events live task feed. Added
+#                             in v0.15 — without a proxy route Starlette 403s
+#                             the upgrade and the SPA retries in a tight loop.
 #
 # Auth model (matches the HTTP proxy):
 #   * Edge: our HMAC cookie via _is_authenticated. WebSocket inherits .cookies
@@ -973,7 +1296,7 @@ async def lifespan(app):
 #   * Upstream: hermes's own ?token=<_SESSION_TOKEN> query param. The SPA
 #     fetches that token via /api/auth/session-token and includes it in the
 #     WS URL, so we just forward path + query verbatim.
-PROXIED_WS_PATHS = ("/api/pty", "/api/ws", "/api/events")
+PROXIED_WS_PATHS = ("/api/pty", "/api/ws", "/api/events", "/api/plugins/*")
 
 
 async def _ws_pump_client_to_upstream(
@@ -1124,6 +1447,9 @@ routes = [
     Route("/setup/api/pairing/deny",            api_pairing_deny,    methods=["POST"]),
     Route("/setup/api/pairing/approved",        api_pairing_approved),
     Route("/setup/api/pairing/revoke",          api_pairing_revoke,  methods=["POST"]),
+    Route("/setup/api/oauth/xai/start",         api_oauth_xai_start,  methods=["POST"]),
+    Route("/setup/api/oauth/xai/status",        api_oauth_xai_status),
+    Route("/setup/api/oauth/xai",               api_oauth_xai_delete, methods=["DELETE"]),
 
     # /setup/* typos return a real 404 — not a silent proxy fallthrough.
     Route("/setup/{path:path}",                 route_setup_404,     methods=ANY_METHOD),
@@ -1133,10 +1459,15 @@ routes = [
     # relative to the catch-all HTTP `Route("/{path:path}", ...)` below
     # doesn't matter — but listing them as a group keeps the surface
     # area auditable. Only paths in PROXIED_WS_PATHS are forwarded;
-    # /api/pub is intentionally omitted.
+    # /api/pub is intentionally omitted (not under /api/plugins/, so the
+    # prefix route below does not match it).
     WebSocketRoute("/api/pty",                  ws_proxy),
     WebSocketRoute("/api/ws",                   ws_proxy),
     WebSocketRoute("/api/events",               ws_proxy),
+    # Plugin-contributed sockets, mounted by hermes under /api/plugins/<name>/
+    # (e.g. kanban's /api/plugins/kanban/events). Prefix-matched so new plugin
+    # WS endpoints in future hermes releases proxy without re-touching this list.
+    WebSocketRoute("/api/plugins/{path:path}",  ws_proxy),
 
     # Root: redirect to /setup if unconfigured, otherwise proxy the dashboard.
     Route("/",                                  route_root,          methods=ANY_METHOD),
