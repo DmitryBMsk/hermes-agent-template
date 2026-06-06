@@ -77,7 +77,7 @@ done
   if ! python3 -c "import socket; s=socket.socket(); s.settimeout(1); s.connect(('127.0.0.1', 9119))" 2>/dev/null; then
     echo "[start.sh watchdog] dashboard not listening on 9119 after 30s; spawning hermes dashboard" >&2
     mkdir -p /data/.hermes/logs
-    nohup hermes dashboard --host 127.0.0.1 --port 9119 --no-open --tui </dev/null >>/data/.hermes/logs/dashboard.log 2>&1 &
+    nohup hermes dashboard --host 127.0.0.1 --port 9119 --no-open --skip-build </dev/null >>/data/.hermes/logs/dashboard.log 2>&1 &
     disown
   else
     echo "[start.sh watchdog] dashboard already listening on 9119; no-op" >&2
