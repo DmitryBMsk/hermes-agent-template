@@ -6,9 +6,9 @@ FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim
 #
 # To bump: check https://github.com/NousResearch/hermes-agent/releases for the
 # newest tag (format `vYYYY.M.D`, optionally with a `.PATCH` suffix, e.g.
-# `v2026.6.5`) and update the default below. Use `main` only if you accept
+# `v2026.6.19`) and update the default below. Use `main` only if you accept
 # that every rebuild can pull arbitrary new upstream commits.
-ARG HERMES_REF=v2026.6.5
+ARG HERMES_REF=v2026.6.19
 
 # tini = tiny init that we run as PID 1. Without it, hermes's grandchild
 # processes (MCP stdio servers, git, bun, browser daemons spawned by tools)
@@ -30,7 +30,7 @@ RUN apt-get update && \
 # Install hermes-agent (provides the `hermes` CLI) and pre-build its React
 # dashboard so `hermes dashboard` has nothing to build at runtime.
 #
-# [all] in v2026.6.5: cron, cli, dev, pty, mcp, homeassistant, sms, acp,
+# [all] in v2026.6.19: cron, cli, dev, pty, mcp, homeassistant, sms, acp,
 # google, web, youtube. Messaging platforms, TTS, and other heavy backends
 # are now lazy-installed by hermes at first use. We pre-install the ones
 # this template actually uses so first-message latency is instant.
