@@ -220,11 +220,17 @@ def write_config_yaml(data: dict[str, str]) -> None:
     # Deployment-managed (always authoritative — these reflect the runtime env).
     merged_model = dict(merged.get("model") if isinstance(merged.get("model"), dict) else {})
     merged_model["default"] = model
-    # Only force provider="auto" when a known API key is configured. If no
-    # API key is set, the user likely configured an OAuth provider (xai-oauth,
-    # qwen-oauth, etc.) via the dashboard's model picker — preserve that value
-    # so a container restart doesn't revert it to "auto" and break their session.
-    if any(data.get(k) for k in PROVIDER_KEYS):
+    # gpt-5.5 is backed by the Codex OAuth bridge in this deployment. Do not let
+    # incidental API-key presence (OpenRouter/NVIDIA fallback/tooling keys) make
+    # startup re-route it through provider="auto".
+    if model.strip() == "gpt-5.5":
+        merged_model["provider"] = "openai-codex"
+    # For other API-key-backed models, keep Hermes' upstream auto-routing.
+    # If no API key is set, the user likely configured an OAuth provider
+    # (xai-oauth, qwen-oauth, etc.) via the dashboard's model picker — preserve
+    # that value so a container restart doesn't revert it to "auto" and break
+    # their session.
+    elif any(data.get(k) for k in PROVIDER_KEYS):
         merged_model["provider"] = "auto"
     merged["model"] = merged_model
 
