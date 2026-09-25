@@ -8,7 +8,7 @@ FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim
 # newest tag (format `vYYYY.M.D`, optionally with a `.PATCH` suffix, e.g.
 # `v2026.6.19`) and update the default below. Use `main` only if you accept
 # that every rebuild can pull arbitrary new upstream commits.
-ARG HERMES_REF=v2026.9.11
+ARG HERMES_REF=v2026.9.24
 
 # tini = tiny init that we run as PID 1. Without it, hermes's grandchild
 # processes (MCP stdio servers, git, bun, browser daemons spawned by tools)
@@ -30,17 +30,19 @@ RUN apt-get update && \
 # Install hermes-agent (provides the `hermes` CLI) and pre-build its React
 # dashboard so `hermes dashboard` has nothing to build at runtime.
 #
-# [all] in v2026.9.11 (unchanged since v2026.8.16.2): cron, pty, mcp,
-# homeassistant, sms, acp, google, web, youtube. Messaging platforms, TTS,
-# and other heavy backends are still lazy-installed by hermes at first use.
-# We pre-install the ones this template actually uses so first-message
-# latency is instant. Extra `exa` stays mandatory: it is not in [all], and
-# lazy uv install in this image (no venv) still fail-closes.
+# [all] in v2026.9.24: cron, pty, mcp, homeassistant, sms, acp, google, web,
+# youtube, uvloop (new; uvicorn[standard] split into core httptools/watchfiles).
+# Messaging platforms, TTS, and other heavy backends are still lazy-installed
+# by hermes at first use. We pre-install the ones this template actually uses
+# so first-message latency is instant. Extra `exa` stays mandatory: it is not
+# in [all], and lazy uv install in this image (no venv) still fail-closes.
+# `hindsight` was dropped upstream in v2026.9.24 (memory plugin left the tree;
+# uv would only warn) and is not used here (memory.provider is empty).
 # When bumping HERMES_REF, re-check hermes-agent's pyproject.toml [all] and
 # the extras below against the new release's pyproject.toml.
 RUN git clone --depth 1 --branch ${HERMES_REF} https://github.com/NousResearch/hermes-agent.git /opt/hermes-agent && \
     cd /opt/hermes-agent && \
-    uv pip install --system --no-cache -e ".[all,messaging,tts-premium,honcho,bedrock,anthropic,edge-tts,hindsight,exa]" && \
+    uv pip install --system --no-cache -e ".[all,messaging,tts-premium,honcho,bedrock,anthropic,edge-tts,exa]" && \
     cd /opt/hermes-agent/web && \
     npm install --silent && \
     npm run build && \
@@ -73,6 +75,11 @@ RUN chmod +x /app/start.sh
 
 ENV HOME=/data
 ENV HERMES_HOME=/data/.hermes
+
+# v2026.9.24 points TMPDIR/TMP/TEMP at $HERMES_HOME/cache/scratch (the Railway
+# volume) unless TMPDIR is already set. Keep disposable temp files on the
+# container's ephemeral disk, like the upstream template does since v2026.9.21.
+ENV TMPDIR=/tmp
 
 # Points hermes at our pre-built TUI bundle. hermes's _make_tui_argv checks
 # HERMES_TUI_DIR first: if dist/entry.js exists there, it skips the npm
