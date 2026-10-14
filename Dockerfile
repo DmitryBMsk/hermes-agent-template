@@ -141,7 +141,8 @@ RUN git clone --depth 1 --branch ${HERMES_REF} https://github.com/NousResearch/h
 #   can point at it (see below).
 
 COPY requirements.txt /app/requirements.txt
-RUN uv pip install --system --no-cache -r /app/requirements.txt
+RUN uv pip install --system --no-cache -r /app/requirements.txt && \
+    python3 -c "import yaml, starlette, uvicorn, jinja2, multipart, httpx, websockets"
 
 RUN mkdir -p /data/.hermes
 
