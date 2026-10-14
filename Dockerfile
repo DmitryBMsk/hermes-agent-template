@@ -42,7 +42,12 @@ RUN apt-get -o Acquire::Retries=3 update && \
     make -j"$(nproc)" && \
     make install
 
-FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim
+# Hermes v0.21.6+ gates every core dependency behind `; python_version >= '3.14'`
+# (pyproject.toml: "we *only* support 3.14"). On 3.12 `uv pip install` still
+# succeeds - it silently skips openai/rich/fire/croniter/... - and the gateway
+# dies on its first import. Stay on Bookworm so the sqlite_build stage above
+# keeps the same glibc and the SQLite self-test below stays meaningful.
+FROM ghcr.io/astral-sh/uv:python3.14-bookworm-slim
 
 
 # Prefer the fixed SQLite over Bookworm's vulnerable libsqlite3.so.0. Verify
@@ -67,10 +72,11 @@ db.close()"
 # branch name (`main`) for bleeding edge.
 #
 # To bump: check https://github.com/NousResearch/hermes-agent/releases for the
-# newest tag (format `vYYYY.M.D`, optionally with a `.PATCH` suffix, e.g.
-# `v2026.6.19`) and update the default below. Use `main` only if you accept
-# that every rebuild can pull arbitrary new upstream commits.
-ARG HERMES_REF=v2026.9.24
+# newest stable tag. Since v0.21.6 (2026-10-08) tags are `vX.Y.Z`; the date
+# tags (`vYYYY.M.D`) stopped at v2026.9.24. Never use `vX.Y.Z+canary.*`.
+# Use `main` only if you accept that every rebuild can pull arbitrary new
+# upstream commits.
+ARG HERMES_REF=v0.21.7
 
 # tini = tiny init that we run as PID 1. Without it, hermes's grandchild
 # processes (MCP stdio servers, git, bun, browser daemons spawned by tools)
@@ -92,26 +98,35 @@ RUN apt-get update && \
 # Install hermes-agent (provides the `hermes` CLI) and pre-build its React
 # dashboard so `hermes dashboard` has nothing to build at runtime.
 #
-# [all] in v2026.9.24: cron, pty, mcp, homeassistant, sms, acp, google, web,
-# youtube, uvloop (new; uvicorn[standard] split into core httptools/watchfiles).
+# [all] in v0.21.7: cron, pty, mcp, uvloop, sms, acp, google, web, youtube
+# (homeassistant left core for a catalog plugin).
 # Messaging platforms, TTS, and other heavy backends are still lazy-installed
 # by hermes at first use. We pre-install the ones this template actually uses
 # so first-message latency is instant. Extra `exa` stays mandatory: it is not
 # in [all], and lazy uv install in this image (no venv) still fail-closes.
-# `hindsight` was dropped upstream in v2026.9.24 (memory plugin left the tree;
-# uv would only warn) and is not used here (memory.provider is empty).
+# `hindsight` (v2026.9.24) and `honcho` (v0.21.6) were dropped upstream when
+# memory providers left core; uv would only warn, and memory.provider is empty.
 # When bumping HERMES_REF, re-check hermes-agent's pyproject.toml [all] and
 # the extras below against the new release's pyproject.toml.
 RUN git clone --depth 1 --branch ${HERMES_REF} https://github.com/NousResearch/hermes-agent.git /opt/hermes-agent && \
     cd /opt/hermes-agent && \
-    uv pip install --system --no-cache -e ".[all,messaging,tts-premium,honcho,bedrock,anthropic,edge-tts,exa]" && \
+    uv pip install --system --no-cache -e ".[all,messaging,tts-premium,bedrock,anthropic,edge-tts,exa]" && \
+    python3 -c "import openai, rich, fire, croniter, telegram, exa_py, mcp; assert openai.__version__ == '2.24.0', openai.__version__" && \
     cd /opt/hermes-agent/web && \
     npm install --silent && \
     npm run build && \
     cd /opt/hermes-agent/ui-tui && \
     npm install --silent --no-fund --no-audit --progress=false && \
     npm run build && \
-    rm -rf /opt/hermes-agent/web /opt/hermes-agent/.git /root/.npm
+    rm -rf /opt/hermes-agent/web /opt/hermes-agent/.git /root/.npm && \
+    test ! -e /opt/hermes-agent/install-stamp.json
+
+# Keep the install unidentifiable on purpose: no .git, no install-stamp.json.
+# v0.21.6+ runs maybe_run_boot_bootstrap on every `hermes` start; with an
+# identity its migrate_config step would move config.yaml from
+# _config_version 23 to 50 on the first boot of each new revision
+# (delegation 50->250 / 3->10, SOUL.md rewrite in step 41). Side effect:
+# `hermes --version` prints "vunknown (2026.9.24)" - verify by code markers.
 
 # Why pre-build ui-tui (and why we don't delete it after):
 # - The dashboard's embedded Chat tab spawns `node ui-tui/dist/entry.js`
@@ -138,7 +153,7 @@ RUN chmod +x /app/start.sh
 ENV HOME=/data
 ENV HERMES_HOME=/data/.hermes
 
-# v2026.9.24 points TMPDIR/TMP/TEMP at $HERMES_HOME/cache/scratch (the Railway
+# Since v2026.9.24 Hermes points TMPDIR/TMP/TEMP at $HERMES_HOME/cache/scratch (the Railway
 # volume) unless TMPDIR is already set. Keep disposable temp files on the
 # container's ephemeral disk, like the upstream template does since v2026.9.21.
 ENV TMPDIR=/tmp
