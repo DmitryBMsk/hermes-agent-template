@@ -76,7 +76,7 @@ db.close()"
 # tags (`vYYYY.M.D`) stopped at v2026.9.24. Never use `vX.Y.Z+canary.*`.
 # Use `main` only if you accept that every rebuild can pull arbitrary new
 # upstream commits.
-ARG HERMES_REF=v0.22.0
+ARG HERMES_REF=v0.22.7
 
 # tini = tiny init that we run as PID 1. Without it, hermes's grandchild
 # processes (MCP stdio servers, git, bun, browser daemons spawned by tools)
@@ -98,7 +98,7 @@ RUN apt-get update && \
 # Install hermes-agent (provides the `hermes` CLI) and pre-build its React
 # dashboard so `hermes dashboard` has nothing to build at runtime.
 #
-# [all] in v0.22.0 (unchanged since v0.21.7): cron, pty, mcp, uvloop, sms, acp,
+# [all] in v0.22.7 (unchanged since v0.21.7): cron, pty, mcp, uvloop, sms, acp,
 # google, web, youtube. v0.22.0 dropped the `langfuse` extra (catalog plugin);
 # not used here.
 # Messaging platforms, TTS, and other heavy backends are still lazy-installed
@@ -117,7 +117,7 @@ RUN apt-get update && \
 RUN git clone --depth 1 --branch ${HERMES_REF} https://github.com/NousResearch/hermes-agent.git /opt/hermes-agent && \
     cd /opt/hermes-agent && \
     uv pip install --system --no-cache -e ".[all,messaging,tts-premium,bedrock,anthropic,edge-tts,exa]" && \
-    python3 -c "import openai, rich, fire, croniter, telegram, exa_py, mcp; assert openai.__version__ == '2.24.0', openai.__version__" && \
+    python3 -c "import openai, rich, fire, croniter, telegram, exa_py, mcp; assert openai.__version__ == '2.54.0', openai.__version__" && \
     cd /opt/hermes-agent/web && \
     npm install --silent && \
     npm run build && \
