@@ -88,10 +88,12 @@ ARG HERMES_REF=v0.22.7
 # (same as Docker's `--init` flag and Kubernetes' pause container).
 #
 # Node.js is required only at build time to compile the Hermes React dashboard.
+# Node 26: hermes-agent v0.22.7 package.json needs node >=26 with engine-strict=true,
+# so npm install fails on Node 22.
 # We strip the source + apt lists afterwards to keep the image lean.
 RUN apt-get update && \
     apt-get install -y --no-install-recommends curl ca-certificates git tini && \
-    curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && \
+    curl -fsSL https://deb.nodesource.com/setup_26.x | bash - && \
     apt-get install -y --no-install-recommends nodejs && \
     rm -rf /var/lib/apt/lists/*
 
