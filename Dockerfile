@@ -76,7 +76,7 @@ db.close()"
 # tags (`vYYYY.M.D`) stopped at v2026.9.24. Never use `vX.Y.Z+canary.*`.
 # Use `main` only if you accept that every rebuild can pull arbitrary new
 # upstream commits.
-ARG HERMES_REF=v0.22.7
+ARG HERMES_REF=v0.23.2
 
 # tini = tiny init that we run as PID 1. Without it, hermes's grandchild
 # processes (MCP stdio servers, git, bun, browser daemons spawned by tools)
@@ -87,9 +87,8 @@ ARG HERMES_REF=v0.22.7
 # stop signal still triggers our graceful shutdown. Standard container init
 # (same as Docker's `--init` flag and Kubernetes' pause container).
 #
-# Node.js is required only at build time to compile the Hermes React dashboard.
-# Node 26: hermes-agent v0.22.7 package.json needs node >=26 with engine-strict=true,
-# so npm install fails on Node 22.
+# Node.js builds the dashboard and runs the prebuilt TUI (dashboard Chat tab).
+# Node 26: hermes-agent package.json needs node >=26 with engine-strict=true.
 # We strip the source + apt lists afterwards to keep the image lean.
 RUN apt-get update && \
     apt-get install -y --no-install-recommends curl ca-certificates git tini && \
@@ -100,7 +99,7 @@ RUN apt-get update && \
 # Install hermes-agent (provides the `hermes` CLI) and pre-build its React
 # dashboard so `hermes dashboard` has nothing to build at runtime.
 #
-# [all] in v0.22.7 (unchanged since v0.21.7): cron, pty, mcp, uvloop, sms, acp,
+# [all] in v0.23.2 (unchanged since v0.21.7): cron, pty, mcp, uvloop, sms, acp,
 # google, web, youtube. v0.22.0 dropped the `langfuse` extra (catalog plugin);
 # not used here.
 # Messaging platforms, TTS, and other heavy backends are still lazy-installed
@@ -116,17 +115,28 @@ RUN apt-get update && \
 # tags are safe by construction (upstream locks only pins >= 3 days old); it can
 # fail only with HERMES_REF=main or an index without upload times. Emergency
 # escape hatch: add --exclude-newer "$(date -u +%Y-%m-%dT%H:%M:%SZ)".
+# Frontend since v0.23.0: npm is refused at the repo root (engines.npm), the
+# workspaces install with the pnpm pinned in pm/lock.json, and the TUI and web
+# products are built by scripts/build/{node-deps,tui,web}.mjs exactly as the
+# upstream Dockerfile's frontend_build stage does. The TUI product is
+# self-contained (dist/entry.js, no node_modules) and replaces ui-tui/ in place.
 RUN git clone --depth 1 --branch ${HERMES_REF} https://github.com/NousResearch/hermes-agent.git /opt/hermes-agent && \
     cd /opt/hermes-agent && \
     uv pip install --system --no-cache -e ".[all,messaging,tts-premium,bedrock,anthropic,edge-tts,exa]" && \
     python3 -c "import openai, rich, fire, croniter, telegram, exa_py, mcp; assert openai.__version__ == '2.54.0', openai.__version__" && \
-    cd /opt/hermes-agent/web && \
-    npm install --silent && \
-    npm run build && \
-    cd /opt/hermes-agent/ui-tui && \
-    npm install --silent --no-fund --no-audit --progress=false && \
-    npm run build && \
-    rm -rf /opt/hermes-agent/web /opt/hermes-agent/.git /root/.npm && \
+    python3 -c 'from pathlib import Path; from pm import ensure, installed_package; ensure("pnpm", explicit=True); Path("/usr/local/bin/pnpm").symlink_to(installed_package("pnpm").binary)' && \
+    pnpm --version && \
+    node scripts/build/node-deps.mjs --source /opt/hermes-agent --workspace ui-tui --workspace web && \
+    python3 -I scripts/generate_icons.py --source /opt/hermes-agent --out /tmp/hermes-icons && \
+    node scripts/build/tui.mjs --source /opt/hermes-agent --out /opt/products/tui && \
+    node scripts/build/web.mjs --source /opt/hermes-agent --icons /tmp/hermes-icons --out /opt/products/web && \
+    rm -rf /opt/hermes-agent/ui-tui /opt/hermes-agent/hermes_cli/web_dist && \
+    mv /opt/products/tui /opt/hermes-agent/ui-tui && \
+    mv /opt/products/web /opt/hermes-agent/hermes_cli/web_dist && \
+    test -f /opt/hermes-agent/ui-tui/dist/entry.js && \
+    test -f /opt/hermes-agent/hermes_cli/web_dist/index.html && \
+    rm -rf /opt/hermes-agent/web /opt/hermes-agent/node_modules /opt/hermes-agent/.git /opt/products /tmp/hermes-icons /root/.npm /root/.cache /root/.local/share/pnpm && \
+    rm -f /usr/local/bin/pnpm && \
     test ! -e /opt/hermes-agent/install-stamp.json
 
 # Keep the install unidentifiable on purpose: no .git, no install-stamp.json.
@@ -145,8 +155,8 @@ RUN git clone --depth 1 --branch ${HERMES_REF} https://github.com/NousResearch/h
 #   first chat-open and blocking the asyncio event loop.
 # - Pre-building at image time surfaces build failures here rather than
 #   at user request time, and makes first-chat-open instant.
-# - We keep ui-tui/ entirely (node_modules + dist + src) so HERMES_TUI_DIR
-#   can point at it (see below).
+# - Since v0.23.0 ui-tui/ holds the built TUI product (dist/entry.js), so
+#   HERMES_TUI_DIR can point at it (see below).
 
 COPY requirements.txt /app/requirements.txt
 RUN uv pip install --system --no-cache -r /app/requirements.txt && \
